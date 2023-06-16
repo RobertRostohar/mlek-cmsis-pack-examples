@@ -41,7 +41,7 @@ project:
           for-context:
             - +AVH-SSE-300-U65
             - +AVH-SSE-310-U65
-        - file: src/main_static.cpp
+        - file: src/main_video.cpp
           for-context:
             - +AVH-SSE-300
             - +AVH-SSE-300-U55
@@ -52,6 +52,12 @@ project:
         - file: src/main_live.cpp
           for-context:
             - +Alif-E7-M55-HP
+
+    - group: VSI
+      files:
+        - file: ../vsi/include/arm_vsi.h
+        - file: ../vsi/video/include/video_drv.h
+        - file: ../vsi/video/source/video_drv.c
 
     - group: Device Files
       files:
