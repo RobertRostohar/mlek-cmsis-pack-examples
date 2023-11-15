@@ -19,8 +19,8 @@
 import argparse
 import ipaddress
 import logging
+import os
 from multiprocessing.connection import Listener
-from os import path
 
 import cv2
 import numpy as np
@@ -40,7 +40,12 @@ default_authkey       = 'vsi_video'
 # Supported file extensions
 video_file_extensions = ('wmv', 'avi', 'mp4')
 image_file_extensions = ('bmp', 'png', 'jpg')
+video_fourcc          = {'wmv' : 'WMV1', 'avi' : 'MJPG', 'mp4' : 'mp4v'}
 
+# Mode Input/Output
+MODE_IO_Msk           = 1<<0
+MODE_Input            = 0<<0
+MODE_Output           = 1<<0
 
 class VideoServer:
     def __init__(self, address, authkey):
@@ -51,6 +56,7 @@ class VideoServer:
         self.STREAM_DISABLE   = 4
         self.FRAME_READ       = 5
         self.FRAME_WRITE      = 6
+        self.CLOSE_SERVER     = 7
         # Color space
         self.GRAYSCALE8       = 1
         self.RGB888           = 2
@@ -60,8 +66,8 @@ class VideoServer:
         self.NV21             = 6
         # Variables
         self.listener         = Listener(address, authkey=authkey.encode('utf-8'))
-        self.mode             = ""
         self.filename         = ""
+        self.mode             = None
         self.active           = False
         self.video            = True
         self.stream           = None
@@ -75,7 +81,7 @@ class VideoServer:
         self.frame_rate       = None
 
     # Set filename
-    def _setFilename(self, filename, mode):
+    def _setFilename(self, base_dir, filename, mode):
         filename_valid = False
 
         if self.active:
@@ -84,25 +90,27 @@ class VideoServer:
         self.filename    = ""
         self.frame_index = 0
 
-        file_extension = filename.split('.')[-1].lower()
+        file_extension = str(filename).split('.')[-1].lower()
 
         if file_extension in video_file_extensions:
             self.video = True
         else:
             self.video = False
 
-        base_dir  = path.dirname(__file__)
-        file_path = path.join(base_dir, filename)
+        file_path = os.path.join(base_dir, filename)
+        logging.debug(f"File path: {file_path}")
 
-        if mode == 0:
-            self.mode = "input"
-            if path.isfile(file_path):
+        if (mode & MODE_IO_Msk) == MODE_Input:
+            self.mode = MODE_Input
+            if os.path.isfile(file_path):
                 if file_extension in (video_file_extensions + image_file_extensions):
                     self.filename  = file_path
                     filename_valid = True
         else:
-            self.mode = "output"
+            self.mode = MODE_Output
             if file_extension in (video_file_extensions + image_file_extensions):
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
                 self.filename  = file_path
                 filename_valid = True
 
@@ -134,15 +142,15 @@ class VideoServer:
 
         if self.filename == "":
             self.video = True
-            if mode == 0:
+            if (mode & MODE_IO_Msk) == MODE_Input:
                 # Device mode: camera
-                self.mode = "input"
+                self.mode = MODE_Input
             else:
                 # Device mode: display
-                self.mode = "output"
+                self.mode = MODE_Output
 
         if self.video:
-            if self.mode == "input":
+            if self.mode == MODE_Input:
                 if self.filename == "":
                     self.stream = cv2.VideoCapture(0)
                     if not self.stream.isOpened():
@@ -157,8 +165,30 @@ class VideoServer:
                         logging.debug(f"Frame ratio: {self.frame_ratio}")
             else:
                 if self.filename != "":
-                    #TODO: Video Output to file
-                    return
+                    extension = str(self.filename).split('.')[-1].lower()
+                    fourcc = cv2.VideoWriter_fourcc(*f'{video_fourcc[extension]}')
+
+                    if os.path.isfile(self.filename) and (self.frame_index != 0):
+                        tmp_filename = f'{self.filename.rstrip(f".{extension}")}_tmp.{extension}'
+                        os.rename(self.filename, tmp_filename)
+                        cap    = cv2.VideoCapture(tmp_filename)
+                        width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        self.resolution = (width, height)
+                        self.frame_rate = cap.get(cv2.CAP_PROP_FPS)
+                        self.stream = cv2.VideoWriter(self.filename, fourcc, self.frame_rate, self.resolution)
+
+                        while cap.isOpened():
+                            ret, frame = cap.read()
+                            if not ret:
+                                cap.release()
+                                os.remove(tmp_filename)
+                                break
+                            self.stream.write(frame)
+                            del frame
+
+                    else:
+                        self.stream = cv2.VideoWriter(self.filename, fourcc, self.frame_rate, self.resolution)
 
         self.active = True
         logging.info("Stream enabled")
@@ -167,14 +197,45 @@ class VideoServer:
     def _disableStream(self):
         self.active = False
         if self.stream is not None:
-            self.frame_index = self.stream.get(cv2.CAP_PROP_POS_FRAMES)
+            if self.mode == MODE_Input:
+                self.frame_index = self.stream.get(cv2.CAP_PROP_POS_FRAMES)
             self.stream.release()
             self.stream = None
         logging.info("Stream disabled")
 
     # Resize frame to requested resolution in pixels
     def __resizeFrame(self, frame, resolution):
-        logging.debug(f"Resize frame to {resolution}")
+        frame_h = frame.shape[0]
+        frame_w = frame.shape[1]
+
+        # Calculate requested aspect ratio (width/height):
+        crop_aspect_ratio  = resolution[0] / resolution[1]
+
+        if crop_aspect_ratio != (frame_w / frame_h):
+            # Crop into image with resize aspect ratio
+            crop_w = int(frame_h * crop_aspect_ratio)
+            crop_h = int(frame_w / crop_aspect_ratio)
+
+            if   crop_w > frame_w:
+                # Crop top and bottom part of the image
+                top    = (frame_h - crop_h) // 2
+                bottom = top + crop_h
+                frame  = frame[top : bottom, 0 : frame_w]
+            elif crop_h > frame_h:
+                # Crop left and right side of the image``
+                left   = (frame_w - crop_w) // 2
+                right  = left + crop_w
+                frame  = frame[0 : frame_h, left : right]
+            else:
+                # Crop to the center of the image
+                left   = (frame_w - crop_w) // 2
+                right  = left + crop_w
+                top    = (frame_h - crop_h) // 2
+                bottom = top + crop_h
+                frame  = frame[top : bottom, left : right]
+            logging.debug(f"Frame cropped from ({frame_w}, {frame_h}) to ({frame.shape[1]}, {frame.shape[0]})")
+        
+        logging.debug(f"Resize frame from ({frame.shape[1]}, {frame.shape[0]}) to ({resolution[0]}, {resolution[1]})")
         try:
             frame = cv2.resize(frame, resolution)
         except Exception as e:
@@ -187,20 +248,35 @@ class VideoServer:
         color_format = None
 
         # Default OpenCV color profile: BGR
-        if   color_space == self.GRAYSCALE8:
-            color_format = cv2.COLOR_BGR2GRAY
-        elif color_space == self.RGB888:
-            color_format = cv2.COLOR_BGR2RGB
-        elif color_space == self.BGR565:
-            color_format = cv2.COLOR_BGR2BGR565
-        elif color_space == self.YUV420:
-            color_format = cv2.COLOR_BGR2YUV_I420
-        elif color_space == self.NV12:
-            frame = self.__changeColorSpace(frame, self.YUV420)
-            color_format = cv2.COLOR_YUV2RGB_NV12
-        elif color_space == self.NV21:
-            frame = self.__changeColorSpace(frame, self.YUV420)
-            color_format = cv2.COLOR_YUV2RGB_NV21
+        if self.mode == MODE_Input:
+            if   color_space == self.GRAYSCALE8:
+                color_format = cv2.COLOR_BGR2GRAY
+            elif color_space == self.RGB888:
+                color_format = cv2.COLOR_BGR2RGB
+            elif color_space == self.BGR565:
+                color_format = cv2.COLOR_BGR2BGR565
+            elif color_space == self.YUV420:
+                color_format = cv2.COLOR_BGR2YUV_I420
+            elif color_space == self.NV12:
+                frame = self.__changeColorSpace(frame, self.YUV420)
+                color_format = cv2.COLOR_YUV2RGB_NV12
+            elif color_space == self.NV21:
+                frame = self.__changeColorSpace(frame, self.YUV420)
+                color_format = cv2.COLOR_YUV2RGB_NV21
+
+        else:
+            if   color_space == self.GRAYSCALE8:
+                color_format = cv2.COLOR_GRAY2BGR
+            elif color_space == self.RGB888:
+                color_format = cv2.COLOR_RGB2BGR
+            elif color_space == self.BGR565:
+                color_format = cv2.COLOR_BGR5652BGR
+            elif color_space == self.YUV420:
+                color_format = cv2.COLOR_YUV2BGR_I420
+            elif color_space == self.NV12:
+                color_format = cv2.COLOR_YUV2BGR_I420
+            elif color_space == self.NV21:
+                color_format = cv2.COLOR_YUV2BGR_I420
 
         if color_format != None:
             logging.debug(f"Change color space to {color_format}")
@@ -258,18 +334,17 @@ class VideoServer:
         try:
             decoded_frame = np.frombuffer(frame, dtype=np.uint8)
             decoded_frame = decoded_frame.reshape((self.resolution[0], self.resolution[1], 3))
-            rgb_frame = self.__changeColorSpace(decoded_frame, self.RGB888)
+            bgr_frame = self.__changeColorSpace(decoded_frame, self.RGB888)
 
             if self.filename == "":
-                cv2.imshow(self.filename, rgb_frame)
+                cv2.imshow(self.filename, bgr_frame)
                 cv2.waitKey(10)
             else:
                 if self.video:
-                    #TODO
-                    pass
-                    #self.stream.write(rgb_frame)
+                    self.stream.write(np.uint8(bgr_frame))
+                    self.frame_index += 1
                 else:
-                    cv2.imwrite(self.filename, rgb_frame)
+                    cv2.imwrite(self.filename, bgr_frame)
         except Exception:
             pass
 
@@ -280,14 +355,13 @@ class VideoServer:
         try:
             conn = self.listener.accept()
             logging.info(f'Connection accepted {self.listener.address}')
-        except Exception as e:
+        except Exception:
             logging.error("Connection not accepted")
             return
 
         while True:
             try:
                 recv = conn.recv()
-
             except EOFError:
                 return
 
@@ -296,7 +370,7 @@ class VideoServer:
 
             if  cmd == self.SET_FILENAME:
                 logging.info("Set filename called")
-                filename_valid = self._setFilename(payload[0], payload[1])
+                filename_valid = self._setFilename(payload[0], payload[1], payload[2])
                 conn.send(filename_valid)
 
             elif cmd == self.STREAM_CONFIGURE:
@@ -325,9 +399,14 @@ class VideoServer:
                 frame = conn.recv_bytes()
                 self._writeFrame(frame)
 
+            elif cmd == self.CLOSE_SERVER:
+                logging.info("Close server connection")
+                self.stop()
+
     # Stop Video Server
     def stop(self):
-        if self.mode == "output" and self.filename == "":
+        self._disableStream()
+        if (self.mode == MODE_Output) and (self.filename == ""):
             try:
                 cv2.destroyAllWindows()
             except Exception:
@@ -341,7 +420,6 @@ def ip(ip):
     try:
         _ = ipaddress.ip_address(ip)
         return ip
-
     except:
         raise argparse.ArgumentTypeError(f"Invalid IP address: {ip}!")
 
@@ -368,6 +446,4 @@ if __name__ == '__main__':
     try:
         Server.run()
     except KeyboardInterrupt:
-        pass
-    finally:
         Server.stop()

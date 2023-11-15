@@ -153,12 +153,12 @@ int main()
 //  }
 
     /* Configure Input Video */
-    if (VideoDrv_Configure(VIDEO_DRV_IN0,  IMAGE_WIDTH, IMAGE_HEIGHT, COLOR_RGB888, 24U) != VIDEO_DRV_OK) {
+    if (VideoDrv_Configure(VIDEO_DRV_IN0,  IMAGE_WIDTH, IMAGE_HEIGHT, VIDEO_DRV_COLOR_RGB888, 24U) != VIDEO_DRV_OK) {
         printf_err("Failed to configure video input\n");
         return 1;
     }
     /* Configure Output Video */
-    if (VideoDrv_Configure(VIDEO_DRV_OUT0, IMAGE_WIDTH, IMAGE_HEIGHT, COLOR_RGB888, 24U) != VIDEO_DRV_OK) {
+    if (VideoDrv_Configure(VIDEO_DRV_OUT0, IMAGE_WIDTH, IMAGE_HEIGHT, VIDEO_DRV_COLOR_RGB888, 24U) != VIDEO_DRV_OK) {
         printf_err("Failed to configure video output\n");
         return 1;
     }
