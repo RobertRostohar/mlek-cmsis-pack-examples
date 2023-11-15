@@ -181,7 +181,7 @@ a physical hardware board.
 - When using a Fixed Virtual Platform installed locally:
   ```shell
   $ <path_to_installed_FVP> -a ./out/kws/AVH-SSE-300-U55/Debug/kws.Debug+AVH-SSE-300-U55.axf -C ethosu.num_macs=256
-  $ <path_to_installed_FVP> -a ./out/object-detection/AVH-SSE-300-U55/Release/object-detection.axf -C ethosu.num_macs=256 -V vsi/video/python
+  $ FVP_Corstone_SSE-300_Ethos-U55 -a ./out/object-detection/AVH-SSE-300-U55/Release/object-detection.axf -C ethosu.num_macs=256 -C mps3_board.v_path=vsi/video/python
   ```
   > **NOTE**: The FVP defaults to running 128 MAC configuration for Arm® Ethos™-U55 NPU.
   > However, our default neural network model for the NPU is for 256 MAC configuration.
